@@ -1,4 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+from mmdet3d.models.autopilot.autopilot_2d import Autopilot2D
 import mmcv
 import torch
 from mmcv.image import tensor2imgs
@@ -44,6 +45,8 @@ def single_gpu_test(model,
             models_3d = (Base3DDetector, Base3DSegmentor,
                          SingleStageMono3DDetector)
             if isinstance(model.module, models_3d):
+                model.module.show_results(data, result, out_dir=out_dir)
+            elif isinstance(model.module, Autopilot2D):
                 model.module.show_results(data, result, out_dir=out_dir)
             # Visualize the results of MMDetection model
             # 'show_result' is MMdetection visualization API

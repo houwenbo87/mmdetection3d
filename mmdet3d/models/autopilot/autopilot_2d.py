@@ -10,6 +10,7 @@ from torch import nn as nn
 from torch.nn import functional as F
 import warnings
 from mmcv.parallel import DataContainer as DC
+from mmcv.image import tensor2imgs
 from os import path as osp
 
 from mmdet3d.core import (CameraInstance3DBoxes, bbox3d2result,
@@ -21,6 +22,8 @@ from mmdet.core.visualization import imshow_det_bboxes
 
 from mmseg.models.builder import build_head as seg_build_head
 #from ..builder import DETECTORS, build_backbone, build_head, build_neck
+
+from mmdet3d.datasets.poseidon_2d_dataset import Poseidon2DDataset
 
 
 @DETECTORS.register_module()
@@ -169,14 +172,17 @@ class Autopilot2D(BaseDetector):
             ]
             bbox_outputs = [bbox_outputs[0][:-1]]
         
+        size = img_metas[0]['ori_shape'][:2]
         if self.seg_decode_head is not None:
-            seg_logit = self.seg_decode_head.forward_test(x, img_metas, self.test_cfg)
+            seg_logit = self.seg_decode_head(x)
+        #    seg_logit = self.seg_decode_head.forward_test(x, img_metas, self.test_cfg)
             seg_logit = resize(
                 input=seg_logit,
-                size=img.shape[2:],
+                size=size,
                 mode='bilinear',
                 align_corners=self.seg_decode_head.align_corners
             )
+            seg_pred = seg_logit.argmax(dim=1)
 
         """
         bbox_img = [
@@ -192,10 +198,11 @@ class Autopilot2D(BaseDetector):
                 result_dict['img_bbox2d'] = img_bbox2d
         return bbox_list
         """
-        if self.seg_decode_head is not None:
-            return (bbox2d_img, seg_logit)
-        else:
-            return bbox2d_img
+        #if self.seg_decode_head is not None:
+        #    return (bbox2d_img, seg_pred)
+        #else:
+        #    return bbox2d_img
+        return bbox2d_img, seg_pred
 
     def aug_test(self, imgs, img_metas, rescale=False):
         """Test function with test time augmentation."""
@@ -267,7 +274,7 @@ class Autopilot2D(BaseDetector):
 
         return [bbox_list]
 
-    def show_result(self,
+    def show_det_result(self,
                     img,
                     result,
                     score_thr=0.3,
@@ -315,7 +322,7 @@ class Autopilot2D(BaseDetector):
             if isinstance(segm_result, tuple):
                 segm_result = segm_result[0]  # ms rcnn
         else:
-            bbox_result, segm_result = result, None
+            bbox_result, segm_result = result[0], None
         bboxes = np.vstack(bbox_result)
         labels = [
             np.full(bbox.shape[0], i, dtype=np.int32)
@@ -354,6 +361,74 @@ class Autopilot2D(BaseDetector):
         if not (show or out_file):
             return img
 
+    def show_seg_result(self,
+                    img,
+                    result,
+                    palette=None,
+                    win_name='',
+                    show=False,
+                    wait_time=0,
+                    out_file=None,
+                    opacity=0.5):
+        """Draw `result` over `img`.
+
+        Args:
+            img (str or Tensor): The image to be displayed.
+            result (Tensor): The semantic segmentation results to draw over
+                `img`.
+            palette (list[list[int]]] | np.ndarray | None): The palette of
+                segmentation map. If None is given, random palette will be
+                generated. Default: None
+            win_name (str): The window name.
+            wait_time (int): Value of waitKey param.
+                Default: 0.
+            show (bool): Whether to show the image.
+                Default: False.
+            out_file (str or None): The filename to write the image.
+                Default: None.
+            opacity(float): Opacity of painted segmentation map.
+                Default 0.5.
+                Must be in (0, 1] range.
+        Returns:
+            img (Tensor): Only if not `show` or `out_file`
+        """
+        img = mmcv.imread(img)
+        img = img.copy()
+        seg = result[0]
+        if palette is None:
+            if self.PALETTE is None:
+                palette = np.random.randint(
+                    0, 255, size=(len(self.CLASSES), 3))
+            else:
+                palette = self.PALETTE
+        palette = np.array(palette)
+        #assert palette.shape[0] == len(self.CLASSES)
+        assert palette.shape[1] == 3
+        assert len(palette.shape) == 2
+        assert 0 < opacity <= 1.0
+        color_seg = np.zeros((seg.shape[0], seg.shape[1], 3), dtype=np.uint8)
+        for label, color in enumerate(palette):
+            color_seg[seg == label, :] = color
+        # convert to BGR
+        color_seg = color_seg[..., ::-1]
+
+        img = img * (1 - opacity) + color_seg * opacity
+        img = img.astype(np.uint8)
+        # if out_file specified, do not show image in window
+        if out_file is not None:
+            show = False
+
+        if show:
+            mmcv.imshow(img, win_name, wait_time)
+        if out_file is not None:
+            mmcv.imwrite(img, out_file)
+
+        if not (show or out_file):
+            warnings.warn('show==False and out_file is not specified, only '
+                          'result image will be returned')
+            return img
+
+
     def show_results(self, data, result, out_dir):
         """Results visualization.
 
@@ -362,36 +437,74 @@ class Autopilot2D(BaseDetector):
             result (list[dict]): Prediction results.
             out_dir (str): Output directory of visualization result.
         """
-        for batch_id in range(len(result)):
-            if isinstance(data['img_metas'][0], DC):
-                img_filename = data['img_metas'][0]._data[0][batch_id][
-                    'filename']
-                cam2img = data['img_metas'][0]._data[0][batch_id]['cam2img']
-            elif mmcv.is_list_of(data['img_metas'][0], dict):
-                img_filename = data['img_metas'][0][batch_id]['filename']
-                cam2img = data['img_metas'][0][batch_id]['cam2img']
+        img_tensor = data['img'][0]
+        img_metas = data['img_metas'][0].data[0]
+        imgs = tensor2imgs(img_tensor, **img_metas[0]['img_norm_cfg'])
+        assert len(imgs) == len(img_metas)
+
+        dets, segs = result
+        segs = segs.cpu().numpy()
+        segs = list(segs)
+
+        for img, img_meta in zip(imgs, img_metas):
+            h, w, _ = img_meta['img_shape']
+            img_show = img[:h, :w, :]
+
+            ori_h, ori_w = img_meta['ori_shape'][:-1]
+            img_show = mmcv.imresize(img_show, (ori_w, ori_h))
+
+            if out_dir:
+                det_out_file = osp.join(out_dir, 'dets', img_meta['ori_filename'])
+                seg_out_file = osp.join(out_dir, 'segs', img_meta['ori_filename'])
             else:
-                ValueError(
-                    f"Unsupported data type {type(data['img_metas'][0])} "
-                    f'for visualization!')
-            img = mmcv.imread(img_filename)
-            file_name = osp.split(img_filename)[-1].split('.')[0]
+                det_out_file = None
+                seg_out_file = None
 
-            assert out_dir is not None, 'Expect out_dir, got none.'
+            self.show_seg_result(
+                img_show,
+                segs,
+                palette=self.PALETTE,
+                show=True,
+                out_file=seg_out_file,
+                opacity=0.5)
 
-            pred_bboxes = result[batch_id]['img_bbox']['boxes_3d']
-            assert isinstance(pred_bboxes, CameraInstance3DBoxes), \
-                f'unsupported predicted bbox type {type(pred_bboxes)}'
+            self.show_det_result(
+                img_show,
+                dets,
+                show=True,
+                out_file=det_out_file,
+                score_thr=0.3)
 
-            show_multi_modality_result(
-                img,
-                None,
-                pred_bboxes,
-                cam2img,
-                out_dir,
-                file_name,
-                'camera',
-                show=True)
+        #for batch_id in range(len(result)):
+        #    if isinstance(data['img_metas'][0], DC):
+        #        img_filename = data['img_metas'][0]._data[0][batch_id][
+        #            'filename']
+        #        cam2img = data['img_metas'][0]._data[0][batch_id]['cam2img']
+        #    elif mmcv.is_list_of(data['img_metas'][0], dict):
+        #        img_filename = data['img_metas'][0][batch_id]['filename']
+        #        cam2img = data['img_metas'][0][batch_id]['cam2img']
+        #    else:
+        #        ValueError(
+        #            f"Unsupported data type {type(data['img_metas'][0])} "
+        #            f'for visualization!')
+        #    img = mmcv.imread(img_filename)
+        #    file_name = osp.split(img_filename)[-1].split('.')[0]
+
+        #    assert out_dir is not None, 'Expect out_dir, got none.'
+
+        #    pred_bboxes = result[batch_id]['img_bbox']['boxes_3d']
+        #    assert isinstance(pred_bboxes, CameraInstance3DBoxes), \
+        #        f'unsupported predicted bbox type {type(pred_bboxes)}'
+
+        #    show_multi_modality_result(
+        #        img,
+        #        None,
+        #        pred_bboxes,
+        #        cam2img,
+        #        out_dir,
+        #        file_name,
+        #        'camera',
+        #        show=True)
 
     def onnx_export(self, img, img_metas):
         """Test function without test time augmentation.

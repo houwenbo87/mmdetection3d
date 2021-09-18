@@ -73,7 +73,7 @@ class DefaultFormatBundle(object):
             results['gt_masks'] = DC(results['gt_masks'], cpu_only=True)
         if 'gt_semantic_seg' in results:
             results['gt_semantic_seg'] = DC(
-                to_tensor(results['gt_semantic_seg'][None, ...]), stack=True)
+                to_tensor(results['gt_semantic_seg'][None, ...].astype(np.int64)), stack=True)
 
         return results
 

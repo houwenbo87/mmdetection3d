@@ -3,10 +3,9 @@ _base_ = [
     '../_base_/schedules/mmdet_schedule_1x.py', '../_base_/default_runtime.py'
 ]
 #norm_cfg = dict(type='SyncBN', requires_grad=True)
-norm_cfg = dict(type='BN', requires_grad=False)
+norm_cfg = dict(type='BN', requires_grad=True)
 # model settings
 model = dict(
-    #type='FCOS',
     type='Autopilot2D',
     backbone=dict(
         type='ResNet',
@@ -44,18 +43,18 @@ model = dict(
         loss_bbox=dict(type='IoULoss', loss_weight=1.0),
         loss_centerness=dict(
             type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0)),
-    #seg_decode_head=dict(
-    #    type='FPNHead',
-    #    in_channels=[256],
-    #    in_index=[0],
-    #    feature_strides=[8],
-    #    channels=128,
-    #    dropout_ratio=0.1,
-    #    num_classes=19,
-    #    norm_cfg=norm_cfg,
-    #    align_corners=False,
-    #    loss_decode=dict(
-    #        type='CrossEntropyLoss', use_sigmoid=False, loss_weight=0.4)),
+    seg_decode_head=dict(
+        type='FPNHead',
+        in_channels=[256],
+        in_index=[0],
+        feature_strides=[8],
+        channels=128,
+        dropout_ratio=0.1,
+        num_classes=19,
+        norm_cfg=norm_cfg,
+        align_corners=False,
+        loss_decode=dict(
+            type='CrossEntropyLoss', use_sigmoid=False, loss_weight=0.4)),
 
     # training and testing settings
     train_cfg=dict(
@@ -84,7 +83,7 @@ train_pipeline = [
     dict(type='Normalize', **img_norm_cfg),
     dict(type='Pad', size_divisor=32),
     dict(type='DefaultFormatBundle'),
-    dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels']),
+    dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels', 'gt_semantic_seg']),
 ]
 test_pipeline = [
     dict(type='LoadImageFromFile'),
@@ -123,4 +122,4 @@ runner = dict(type='EpochBasedRunner', max_epochs=48)
 evaluation = dict(interval=1)
 
 # fp16 settings
-fp16 = dict(loss_scale=512.)
+#fp16 = dict(loss_scale=512.)
